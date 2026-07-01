@@ -38,7 +38,7 @@ The immediate risk is not model quality; it is silently creating frames that loo
 ### Key Decisions
 
 - **MinAtar first, JAXAtari later.** Start with MinAtar because its 10x10 games are cheap and debuggable; keep JAXAtari as a future compatible source once the dataset contract works.
-- **Grayscale is the model-facing source of truth.** The dataset should train future models on normalized visual frames rather than object-channel identifiers, because game-specific object IDs could weaken cross-game transfer.
+- **Grayscale is the model-facing source of truth.** The dataset should train future models on normalized visual frames rather than object-channel tensors, while preserving enough grayscale contrast for different objects to be visually separable.
 - **Dataset creation is separate from training.** The v1 work should produce frame outputs and inspection tools without deciding model prompts, heldout splits, or control objectives.
 - **Visual inspection is mandatory.** Playback and snippet review are first-class requirements because grayscale conversion errors are easier to catch by looking than by reading metadata.
 
@@ -123,7 +123,7 @@ The immediate risk is not model quality; it is silently creating frames that loo
 
 - **KTD1. Use a small Python package under `dataset_creation/`.** The repo has no code scaffold yet, and the user asked for dataset creation to be at least separated as a monorepo subfolder.
 - **KTD2. Store generated runs as `.npz` frame bundles plus JSON manifests.** NumPy bundles are simple for `10x10` normalized frame arrays, while JSON keeps audit and provenance readable without inventing a database or dataset registry.
-- **KTD3. Project MinAtar object planes to object-agnostic grayscale occupancy.** For v1, a pixel is model-facing white when any object occupies it and black when empty, avoiding stable object-ID brightness that could teach game-specific labels.
+- **KTD3. Project MinAtar object planes to channel-weighted grayscale.** For v1, background is black and object channels map to stable brightness values in one normalized frame, avoiding multi-channel state images while keeping playback readable.
 - **KTD4. Keep policy execution pluggable but implement only random/legal rollout first.** The extractor contract should name the policy source, but trained experts are deferred and must not block frame generation.
 - **KTD5. Make visual QA consume saved artifacts only.** HTML playback, GIFs, and contact sheets must load the saved frame bundle so visual inspection proves the same artifact that future training will read.
 
@@ -195,11 +195,11 @@ Each frame bundle should include a `frames` array shaped as episodes or flat tim
 
 ### U2. Grayscale Projection And Validation
 
-- **Goal:** Convert MinAtar observations into object-agnostic normalized grayscale frames.
+- **Goal:** Convert MinAtar observations into normalized grayscale frames with visible object contrast.
 - **Requirements:** R2, R7, R8, R9
 - **Files:** `dataset_creation/nanovision_dataset/grayscale.py`, `tests/dataset_creation/test_grayscale.py`
-- **Approach:** Implement projection from `H x W x C` object planes to `H x W` float frames using occupancy, then centralize shape, finite-value, and range validation.
-- **Test Scenarios:** Empty object planes produce all-zero frames; a single occupied cell in any channel produces `1.0`; multi-channel overlap still produces `1.0`; invalid rank, NaN, or out-of-range data is rejected.
+- **Approach:** Implement projection from `H x W x C` object planes to `H x W` float frames using stable channel brightness weights, then centralize shape, finite-value, and range validation.
+- **Test Scenarios:** Empty object planes produce all-zero frames; different object channels produce distinct grayscale values; multi-channel overlap keeps a valid normalized value; invalid rank, NaN, or out-of-range data is rejected.
 - **Verification:** `uv run pytest tests/dataset_creation/test_grayscale.py`
 
 ### U3. MinAtar Rollout Source

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from nanovision_dataset.grayscale import project_to_grayscale, validate_frame, validate_frames
+from nanovision_dataset.grayscale import channel_weights, project_to_grayscale, validate_frame, validate_frames
 
 
 def test_empty_object_planes_produce_black_frame() -> None:
@@ -14,15 +14,47 @@ def test_empty_object_planes_produce_black_frame() -> None:
     assert np.all(frame == 0.0)
 
 
-def test_any_occupied_channel_produces_white_pixel() -> None:
+def test_occupied_channels_produce_distinct_grayscale_values() -> None:
     obs = np.zeros((10, 10, 3), dtype=np.float32)
-    obs[2, 4, 1] = 1.0
+    obs[1, 1, 0] = 1.0
+    obs[2, 2, 1] = 1.0
+    obs[3, 3, 2] = 1.0
+
+    frame = project_to_grayscale(obs)
+
+    assert frame[1, 1] == pytest.approx(0.25)
+    assert frame[2, 2] == pytest.approx(0.625)
+    assert frame[3, 3] == pytest.approx(1.0)
+
+
+def test_overlapping_channels_keep_brightest_active_value() -> None:
+    obs = np.zeros((10, 10, 3), dtype=np.float32)
+    obs[2, 4, 0] = 1.0
     obs[2, 4, 2] = 1.0
 
     frame = project_to_grayscale(obs)
 
     assert frame[2, 4] == 1.0
     assert frame.sum() == 1.0
+
+
+def test_single_channel_uses_white_for_occupied_pixels() -> None:
+    obs = np.zeros((10, 10, 1), dtype=np.float32)
+    obs[2, 4, 0] = 1.0
+
+    frame = project_to_grayscale(obs)
+
+    assert frame[2, 4] == 1.0
+
+
+def test_channel_weights_validate_inputs() -> None:
+    np.testing.assert_allclose(channel_weights(3), np.asarray([0.25, 0.625, 1.0], dtype=np.float32))
+
+    with pytest.raises(ValueError):
+        channel_weights(0)
+
+    with pytest.raises(ValueError):
+        channel_weights(2, min_value=0.0)
 
 
 @pytest.mark.parametrize(

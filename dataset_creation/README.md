@@ -4,6 +4,7 @@ This folder contains the first Nano Pixel RL dataset path: MinAtar rollouts conv
 
 The v1 artifact is model-facing visual data, not tokenization or training data.
 Frames are saved as normalized `0..1` grayscale arrays and inspection helpers read those saved arrays back for audit and visual QA.
+Background pixels are `0.0`; active object channels are projected to stable grayscale brightness values so different objects remain visually separable without storing a multi-channel state image.
 
 ## Generate A Tiny Backlog
 

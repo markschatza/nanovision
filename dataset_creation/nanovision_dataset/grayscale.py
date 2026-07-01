@@ -14,7 +14,7 @@ class FrameStats:
 
 
 def project_to_grayscale(observation: np.ndarray) -> np.ndarray:
-    """Project MinAtar object planes to object-agnostic occupancy grayscale."""
+    """Project MinAtar object planes to one normalized grayscale frame."""
     array = np.asarray(observation)
     if array.ndim != 3:
         raise ValueError(f"expected observation rank 3, got shape {array.shape}")
@@ -23,10 +23,22 @@ def project_to_grayscale(observation: np.ndarray) -> np.ndarray:
     if not np.isfinite(array).all():
         raise ValueError("observation contains non-finite values")
 
-    occupied = np.any(array > 0, axis=2)
-    frame = occupied.astype(np.float32)
+    weights = channel_weights(array.shape[2])
+    active = array > 0
+    weighted = active * weights.reshape((1, 1, -1))
+    frame = weighted.max(axis=2).astype(np.float32)
     validate_frame(frame)
     return frame
+
+
+def channel_weights(channel_count: int, min_value: float = 0.25) -> np.ndarray:
+    if channel_count < 1:
+        raise ValueError("channel_count must be positive")
+    if min_value <= 0.0 or min_value > 1.0:
+        raise ValueError("min_value must be in (0, 1]")
+    if channel_count == 1:
+        return np.asarray([1.0], dtype=np.float32)
+    return np.linspace(min_value, 1.0, channel_count, dtype=np.float32)
 
 
 def validate_frame(frame: np.ndarray, expected_shape: tuple[int, int] | None = (10, 10)) -> FrameStats:
