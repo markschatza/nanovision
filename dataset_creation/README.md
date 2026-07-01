@@ -21,6 +21,7 @@ uv run nanovision-dataset generate --games breakout --episodes 1 --seed 0 --poli
 Pgx baseline checkpoints download into `artifacts/pgx-baselines` by default.
 JAX/XLA compilations are cached in `artifacts/jax-cache` by default.
 Override it with `--jax-cache-dir` when running repeated remote generations from another working directory.
+Pgx baseline rollouts run as a JIT-compiled `jax.lax.scan`, then copy completed episode arrays back once for writing.
 Pgx runs use Pgx's MinAtar action indexing; do not mix action labels with native MinAtar random-policy runs without checking the manifest `action_space`.
 That directory is rebuildable and ignored by version control.
 

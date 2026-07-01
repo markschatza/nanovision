@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import functools
 import os
 from typing import Iterable
 
 import numpy as np
 
-from nanovision_dataset.grayscale import project_to_grayscale
 from nanovision_dataset.minatar_source import EpisodeRecord, normalize_games
 
 
@@ -44,36 +44,35 @@ class PgxBaselineSource:
         model = pgx.make_baseline_model(f"minatar-{game}_v0", download_dir=self.baseline_dir)
 
         key = jax.random.PRNGKey(seed)
-        key, init_key = jax.random.split(key)
-        state = environment.init(init_key)
+        frames, actions, rewards, terminals = _rollout_episode_jax(
+            jax,
+            jnp,
+            environment,
+            model,
+            key,
+            self.max_steps,
+        )
+        frames = np.asarray(jax.device_get(frames), dtype=np.float32)
+        actions = np.asarray(jax.device_get(actions), dtype=np.int16)
+        rewards = np.asarray(jax.device_get(rewards), dtype=np.float32)
+        terminals = np.asarray(jax.device_get(terminals), dtype=bool)
 
-        frames: list[np.ndarray] = []
-        actions: list[int] = []
-        rewards: list[float] = []
-        terminals: list[bool] = []
-
-        for _ in range(self.max_steps):
-            observation = np.asarray(jax.device_get(state.observation))
-            frames.append(project_to_grayscale(observation))
-            logits, _value = model(state.observation[None, ...])
-            action = _select_action(jnp, logits[0], state.legal_action_mask)
-            key, step_key = jax.random.split(key)
-            state = environment.step(state, jnp.int32(action), step_key)
-            actions.append(action)
-            rewards.append(float(np.asarray(jax.device_get(state.rewards))[0]))
-            done = bool(np.asarray(jax.device_get(state.terminated | state.truncated)))
-            terminals.append(done)
-            if done:
-                break
+        terminal_indices = np.flatnonzero(terminals)
+        if terminal_indices.size:
+            frame_count = int(terminal_indices[0]) + 1
+            frames = frames[:frame_count]
+            actions = actions[:frame_count]
+            rewards = rewards[:frame_count]
+            terminals = terminals[:frame_count]
 
         return EpisodeRecord(
             game=game,
             episode=episode,
             seed=seed,
-            frames=np.asarray(frames, dtype=np.float32),
-            actions=np.asarray(actions, dtype=np.int16),
-            rewards=np.asarray(rewards, dtype=np.float32),
-            terminals=np.asarray(terminals, dtype=bool),
+            frames=frames,
+            actions=actions,
+            rewards=rewards,
+            terminals=terminals,
         )
 
 
@@ -108,3 +107,57 @@ def _update_jax_config_if_available(jax, name: str, value: object) -> None:
 def _select_action(jnp, logits, legal_action_mask) -> int:
     masked_logits = jnp.where(legal_action_mask, logits, -jnp.inf)
     return int(jnp.argmax(masked_logits))
+
+
+def _select_action_array(jnp, logits, legal_action_mask):
+    masked_logits = jnp.where(legal_action_mask, logits, -jnp.inf)
+    return jnp.argmax(masked_logits).astype(jnp.int32)
+
+
+def _project_to_grayscale_jax(jnp, observation):
+    channel_count = observation.shape[-1]
+    if channel_count == 1:
+        weights = jnp.asarray([1.0], dtype=jnp.float32)
+    else:
+        weights = jnp.linspace(0.25, 1.0, channel_count, dtype=jnp.float32)
+    active = observation > 0
+    weighted = active * weights.reshape((1, 1, -1))
+    return weighted.max(axis=-1).astype(jnp.float32)
+
+
+def _rollout_episode_jax(jax, jnp, environment, model, key, max_steps: int):
+    @functools.partial(jax.jit, static_argnums=1)
+    def rollout(start_key, step_count: int):
+        start_key, init_key = jax.random.split(start_key)
+        initial_state = environment.init(init_key)
+        initial_done = jnp.asarray(False)
+
+        def scan_step(carry, _):
+            state, key, already_done = carry
+            frame = _project_to_grayscale_jax(jnp, state.observation)
+            logits, _value = model(state.observation[None, ...])
+            action = _select_action_array(jnp, logits[0], state.legal_action_mask)
+            key, step_key = jax.random.split(key)
+
+            def step_active(_):
+                next_state = environment.step(state, action, step_key)
+                done = next_state.terminated | next_state.truncated
+                reward = next_state.rewards[0]
+                return next_state, reward, done
+
+            def step_inactive(_):
+                return state, jnp.asarray(0.0, dtype=jnp.float32), already_done
+
+            next_state, reward, done = jax.lax.cond(already_done, step_inactive, step_active, operand=None)
+            terminal = already_done | done
+            return (next_state, key, terminal), (frame, action, reward.astype(jnp.float32), terminal)
+
+        _carry, outputs = jax.lax.scan(
+            scan_step,
+            (initial_state, start_key, initial_done),
+            xs=None,
+            length=step_count,
+        )
+        return outputs
+
+    return rollout(key, max_steps)
