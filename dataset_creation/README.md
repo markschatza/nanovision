@@ -12,6 +12,22 @@ Background pixels are `0.0`; active object channels are projected to stable gray
 uv run nanovision-dataset generate --games breakout --episodes 1 --seed 0 --out artifacts/datasets/smoke
 ```
 
+Use Pgx pretrained baselines for non-random trajectories:
+
+```powershell
+uv run nanovision-dataset generate --games breakout --episodes 1 --seed 0 --policy pgx-baseline --out artifacts/datasets/pgx-smoke
+```
+
+Pgx baseline checkpoints download into `artifacts/pgx-baselines` by default.
+JAX/XLA compilations are cached in `artifacts/jax-cache` by default.
+Override it with `--jax-cache-dir` when running repeated remote generations from another working directory.
+Pgx runs use Pgx's MinAtar action indexing; do not mix action labels with native MinAtar random-policy runs without checking the manifest `action_space`.
+That directory is rebuildable and ignored by version control.
+
+For CUDA rollout generation, use a separate Linux remote environment rather than the local Windows lock.
+The Pgx baseline checkpoints currently require JAX `0.4.35`; newer CUDA 13 JAX releases can see the GPU but cannot load the baseline pickle.
+On the Aesop host, the verified setup used `jax[cuda12]==0.4.35`, `pgx==2.6.0`, and a venv-local `nvidia/cuda_nvcc/__init__.py` package-file workaround before `jax.devices()` reported `CudaDevice(id=0)`.
+
 ## Audit A Backlog
 
 ```powershell
