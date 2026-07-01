@@ -1,0 +1,29 @@
+[project]
+name = "nanovision"
+version = "0.1.0"
+description = "Nano Pixel RL dataset creation tools."
+readme = "STRATEGY.md"
+requires-python = ">=3.11"
+dependencies = [
+    "minatar>=1.0.15",
+    "numpy>=1.26",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+nanovision-dataset = "nanovision_dataset.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+where = ["dataset_creation"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["dataset_creation"]
