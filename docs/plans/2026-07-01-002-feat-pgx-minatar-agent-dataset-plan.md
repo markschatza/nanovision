@@ -21,7 +21,7 @@ created: 2026-07-01
 ### Requirements
 
 - R1. Dataset generation must support a `pgx-baseline` policy option alongside the existing random MinAtar source.
-- R2. The Pgx source must produce the same saved frame contract as the current writer: normalized grayscale frames, actions, rewards, terminals, and manifest metadata.
+- R2. The Pgx source must produce the same saved frame contract as the current writer: `uint8` grayscale frames, actions, rewards, terminals, and manifest metadata.
 - R3. Version 1 should target three games for trained-agent samples before expanding to all five games.
 - R4. Generated checkpoints, datasets, previews, credentials, and virtual environments must remain out of source control.
 - R5. The workflow must include a remote CUDA/JAX path for rollout generation so local machine memory pressure does not block sample creation.

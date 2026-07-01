@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from nanovision_dataset.grayscale import validate_frames
+from nanovision_dataset.grayscale import frame_pixels_uint8, frames_to_uint8, validate_frames
 from nanovision_dataset.writer import load_bundle, load_manifest
 
 
@@ -27,6 +27,7 @@ def audit_run(run_dir: Path | str) -> dict[str, Any]:
         "ok": True,
         "frame_shape": [int(frames.shape[1]), int(frames.shape[2])],
         "dtype": str(frames.dtype),
+        "frame_encoding": _frame_encoding(frames),
         "value_min": float(frames.min()),
         "value_max": float(frames.max()),
         "frame_count": int(frames.shape[0]),
@@ -83,7 +84,7 @@ def export_html_viewer(run_dir: Path | str, output_path: Path | str, max_frames:
     bundle = load_bundle(run_dir)
     frames = bundle["frames"][:max_frames]
     validate_frames(frames)
-    frame_payload = (np.clip(frames, 0.0, 1.0) * 255).astype(np.uint8).reshape((frames.shape[0], -1)).tolist()
+    frame_payload = frames_to_uint8(frames).reshape((frames.shape[0], -1)).tolist()
     payload = {
         "manifest": manifest,
         "frameShape": [int(frames.shape[1]), int(frames.shape[2])],
@@ -114,7 +115,7 @@ def _load_frame_images(run_dir: Path | str, max_frames: int, scale: int) -> list
 
 
 def _frame_to_image(frame: np.ndarray, scale: int) -> Image.Image:
-    pixels = np.clip(frame * 255.0, 0, 255).astype(np.uint8)
+    pixels = frame_pixels_uint8(frame)
     image = Image.fromarray(pixels, mode="L")
     if scale != 1:
         image = image.resize((image.width * scale, image.height * scale), resample=Image.Resampling.NEAREST)
@@ -331,9 +332,19 @@ def _validate_manifest_matches(manifest: dict[str, Any], audit: dict[str, Any]) 
         "value_max": audit["value_max"],
         "per_game": audit["per_game"],
     }
+    if "frame_encoding" in manifest:
+        checks["frame_encoding"] = audit["frame_encoding"]
     for key, actual in checks.items():
         if manifest.get(key) != actual:
             raise ValueError(f"manifest {key}={manifest.get(key)!r} does not match bundle {actual!r}")
+
+
+def _frame_encoding(frames: np.ndarray) -> str:
+    if frames.dtype == np.uint8:
+        return "uint8_0_255"
+    if np.issubdtype(frames.dtype, np.floating):
+        return "normalized_float_0_1"
+    return str(frames.dtype)
 
 
 def _episode_count(bundle: dict[str, np.ndarray]) -> int:

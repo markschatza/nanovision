@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from nanovision_dataset.grayscale import validate_frames
+from nanovision_dataset.grayscale import frames_to_uint8, validate_frames
 from nanovision_dataset.minatar_source import EpisodeRecord
 
 
@@ -78,7 +78,7 @@ def flatten_records(records: list[EpisodeRecord]) -> dict[str, np.ndarray]:
             terminals.append(bool(record.terminals[timestep]))
 
     return {
-        "frames": np.asarray(frames, dtype=np.float32),
+        "frames": frames_to_uint8(np.asarray(frames)),
         "games": np.asarray(games),
         "episodes": np.asarray(episodes, dtype=np.int32),
         "timesteps": np.asarray(timesteps, dtype=np.int32),
@@ -117,6 +117,7 @@ def build_manifest(
         "frame_count": int(frames.shape[0]),
         "frame_shape": [int(frames.shape[1]), int(frames.shape[2])],
         "dtype": str(frames.dtype),
+        "frame_encoding": "uint8_0_255",
         "value_min": float(frames.min()),
         "value_max": float(frames.max()),
         "bundles": [bundle_name],

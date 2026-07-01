@@ -13,6 +13,26 @@ class FrameStats:
     max_value: float
 
 
+def frames_to_uint8(frames: np.ndarray) -> np.ndarray:
+    array = np.asarray(frames)
+    if np.issubdtype(array.dtype, np.integer):
+        if array.min() < 0 or array.max() > 255:
+            raise ValueError("integer frame values must be in [0, 255]")
+        return array.astype(np.uint8, copy=False)
+    validate_frames(array)
+    return np.rint(np.clip(array, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def frame_pixels_uint8(frame: np.ndarray) -> np.ndarray:
+    array = np.asarray(frame)
+    if np.issubdtype(array.dtype, np.integer):
+        if array.min() < 0 or array.max() > 255:
+            raise ValueError("integer frame values must be in [0, 255]")
+        return array.astype(np.uint8, copy=False)
+    validate_frame(array)
+    return np.rint(np.clip(array, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
 def project_to_grayscale(observation: np.ndarray) -> np.ndarray:
     """Project MinAtar object planes to one normalized grayscale frame."""
     array = np.asarray(observation)
@@ -53,8 +73,11 @@ def validate_frame(frame: np.ndarray, expected_shape: tuple[int, int] | None = (
         raise ValueError("frame contains non-finite values")
     min_value = float(array.min()) if array.size else 0.0
     max_value = float(array.max()) if array.size else 0.0
-    if min_value < 0.0 or max_value > 1.0:
-        raise ValueError(f"expected frame values in [0, 1], got [{min_value}, {max_value}]")
+    if np.issubdtype(array.dtype, np.integer):
+        if min_value < 0.0 or max_value > 255.0:
+            raise ValueError(f"expected integer frame values in [0, 255], got [{min_value}, {max_value}]")
+    elif min_value < 0.0 or max_value > 1.0:
+        raise ValueError(f"expected float frame values in [0, 1], got [{min_value}, {max_value}]")
     return FrameStats(
         shape=tuple(int(dim) for dim in array.shape),
         dtype=str(array.dtype),

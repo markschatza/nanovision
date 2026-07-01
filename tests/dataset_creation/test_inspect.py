@@ -30,6 +30,8 @@ def test_audit_reports_saved_bundle_stats(tmp_path) -> None:
 
     assert audit["ok"] is True
     assert audit["frame_shape"] == [10, 10]
+    assert audit["dtype"] == "uint8"
+    assert audit["frame_encoding"] == "uint8_0_255"
     assert audit["frame_count"] == 3
     assert audit["per_game_frame_count"] == {"breakout": 3}
 
@@ -52,6 +54,7 @@ def test_export_html_viewer_embeds_saved_frames(tmp_path) -> None:
 
     assert "NanoVision Frame Viewer" in content
     assert '"frames":[[' in content
+    assert "255" in content
     assert "breakout" in content
 
 
@@ -69,6 +72,16 @@ def test_audit_flags_manifest_coverage_mismatch(tmp_path) -> None:
     artifact = _write_sample(tmp_path)
     manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
     manifest["games"] = ["asterix", "breakout"]
+    artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        audit_run(tmp_path)
+
+
+def test_audit_flags_manifest_frame_encoding_mismatch(tmp_path) -> None:
+    artifact = _write_sample(tmp_path)
+    manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+    manifest["frame_encoding"] = "normalized_float_0_1"
     artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError):

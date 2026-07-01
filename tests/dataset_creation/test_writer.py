@@ -33,7 +33,21 @@ def test_write_run_writes_manifest_and_bundle(tmp_path) -> None:
 
     bundle = load_bundle(tmp_path)
     assert bundle["frames"].shape == (2, 10, 10)
+    assert bundle["frames"].dtype == np.uint8
     assert bundle["games"].tolist() == ["breakout", "breakout"]
+
+
+def test_write_run_quantizes_float_frames_to_uint8(tmp_path) -> None:
+    record = _record()
+    record.frames[0, 0, 0] = 0.5
+
+    write_run(tmp_path, [record], policy_source="random", settings={})
+
+    manifest = load_manifest(tmp_path)
+    bundle = load_bundle(tmp_path)
+    assert manifest["dtype"] == "uint8"
+    assert manifest["frame_encoding"] == "uint8_0_255"
+    assert bundle["frames"][0, 0, 0] == 128
 
 
 def test_load_manifest_reads_json(tmp_path) -> None:

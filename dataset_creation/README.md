@@ -3,8 +3,8 @@
 This folder contains the first Nano Pixel RL dataset path: MinAtar rollouts converted into saved grayscale frame backlogs.
 
 The v1 artifact is model-facing visual data, not tokenization or training data.
-Frames are saved as normalized `0..1` grayscale arrays and inspection helpers read those saved arrays back for audit and visual QA.
-Background pixels are `0.0`; active object channels are projected to stable grayscale brightness values so different objects remain visually separable without storing a multi-channel state image.
+Frames are saved as `uint8` grayscale pixels in `0..255`; training loaders can normalize them back to `0..1`.
+Background pixels are `0`; active object channels are projected to stable grayscale brightness values so different objects remain visually separable without storing a multi-channel state image.
 
 ## Generate A Tiny Backlog
 
@@ -69,7 +69,7 @@ uv run nanovision-dataset export-contact-sheet artifacts/datasets/smoke --out ar
 
 ## Artifact Shape
 
-- `manifest.json` records games, seeds, policy source, frame counts, episode counts, frame shape, numeric range, and bundle paths.
-- `frames.npz` stores `frames` as `N x 10 x 10` float32 grayscale values plus aligned metadata arrays.
+- `manifest.json` records games, seeds, policy source, frame counts, episode counts, frame shape, frame encoding, numeric range, and bundle paths.
+- `frames.npz` stores `frames` as `N x 10 x 10` `uint8` grayscale pixel values plus aligned metadata arrays.
 
 Generated dataset outputs under `artifacts/` are rebuildable and intentionally ignored by version control.

@@ -68,9 +68,9 @@ created: 2026-07-01
 ## Dataset Target
 
 - A `100000` step x `16` lane run emits up to `1,600,000` frames before dropping incomplete tails.
-- Current frame storage is `float32` grayscale, so raw frames are about `400` bytes each before compression and metadata.
-- `10 GB` raw frames per game is roughly `25,000,000` frames, or about sixteen `100000 x 16` chunks per game before compression.
-- Full `50 GB` raw target across five games is roughly `125,000,000` frames.
+- Current frame storage is `uint8` grayscale, so raw frames are about `100` bytes each before compression and metadata.
+- `10 GB` raw frames per game is roughly `100,000,000` frames, or about sixty-three `100000 x 16` chunks per game before compression.
+- Full `50 GB` raw target across five games is roughly `500,000,000` frames.
 - The remote machine currently has enough headroom for the target, but large runs should be chunked per game and audited after each chunk.
 
 ## Definition Of Done
