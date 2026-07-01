@@ -26,6 +26,17 @@ The default Pgx batch size is `16`; tune `--batch-size` per game if memory or th
 Pgx runs use Pgx's MinAtar action indexing; do not mix action labels with native MinAtar random-policy runs without checking the manifest `action_space`.
 That directory is rebuildable and ignored by version control.
 
+For large datasets, use reset-on-terminal streaming lanes:
+
+```powershell
+uv run nanovision-dataset generate-stream --games breakout --steps 100000 --lanes 16 --seed 0 --out artifacts/datasets/stream-breakout
+```
+
+Each lane starts a fresh game on the step after terminal.
+The writer post-processes lane streams into normal variable-length episode records.
+By default, incomplete tail episodes are dropped; add `--include-incomplete` if frame count matters more than complete episodes.
+A `100000` step x `16` lane run emits up to `1,600,000` frames before tail dropping.
+
 For CUDA rollout generation, use a separate Linux remote environment rather than the local Windows lock.
 The Pgx baseline checkpoints currently require JAX `0.4.35`; newer CUDA 13 JAX releases can see the GPU but cannot load the baseline pickle.
 On the Aesop host, the verified setup used `jax[cuda12]==0.4.35`, `pgx==2.6.0`, and a venv-local `nvidia/cuda_nvcc/__init__.py` package-file workaround before `jax.devices()` reported `CudaDevice(id=0)`.

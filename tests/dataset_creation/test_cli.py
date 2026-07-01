@@ -115,6 +115,63 @@ def test_generate_command_records_pgx_policy_metadata(tmp_path, capsys, monkeypa
     assert manifest["settings"]["jax_cache_dir"] == "artifacts/custom-jax-cache"
 
 
+def test_generate_stream_command_records_stream_metadata(tmp_path, capsys, monkeypatch) -> None:
+    class StubPgxSource:
+        def __init__(self, max_steps: int, baseline_dir: str, jax_cache_dir: str | None, batch_size: int) -> None:
+            self.max_steps = max_steps
+            self.baseline_dir = baseline_dir
+            self.jax_cache_dir = jax_cache_dir
+            self.batch_size = batch_size
+
+        def rollout_game_stream(
+            self,
+            game: str,
+            step_count: int,
+            lane_count: int,
+            seed: int,
+            include_incomplete: bool = False,
+        ):
+            return [
+                EpisodeRecord(
+                    game=game,
+                    episode=0,
+                    seed=seed,
+                    frames=np.zeros((2, 10, 10), dtype=np.float32),
+                    actions=np.asarray([1, 2], dtype=np.int16),
+                    rewards=np.asarray([0.0, 1.0], dtype=np.float32),
+                    terminals=np.asarray([False, True]),
+                )
+            ]
+
+    monkeypatch.setattr(cli, "PgxBaselineSource", StubPgxSource)
+    output_dir = tmp_path / "stream-generated"
+
+    assert main(
+        [
+            "generate-stream",
+            "--games",
+            "breakout",
+            "--steps",
+            "20",
+            "--lanes",
+            "4",
+            "--seed",
+            "9",
+            "--include-incomplete",
+            "--out",
+            str(output_dir),
+        ]
+    ) == 0
+    capsys.readouterr()
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+
+    assert manifest["policy_source"] == "pgx-baseline-stream"
+    assert manifest["settings"]["include_incomplete"] is True
+    assert manifest["settings"]["lanes"] == 4
+    assert manifest["settings"]["steps"] == 20
+    assert manifest["settings"]["seed_stride"] == 84
+
+
 def test_export_commands_create_visual_artifacts(tmp_path, capsys) -> None:
     _write_sample(tmp_path)
 

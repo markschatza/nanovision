@@ -13,6 +13,7 @@ from nanovision_dataset.minatar_source import EpisodeRecord, normalize_games
 @dataclass(frozen=True)
 class PgxRuntime:
     rollout_batch: object
+    rollout_stream: object
 
 
 class PgxBaselineSource:
@@ -107,9 +108,37 @@ class PgxBaselineSource:
             model = pgx.make_baseline_model(f"minatar-{game}_v0", download_dir=self.baseline_dir)
             rollout_episode = _build_rollout_episode_jax(jax, jnp, environment, model, self.max_steps)
             rollout_batch = jax.jit(jax.vmap(rollout_episode))
-            runtime = PgxRuntime(rollout_batch=rollout_batch)
+            rollout_stream = _build_stream_rollout_jax(jax, jnp, environment, model)
+            runtime = PgxRuntime(rollout_batch=rollout_batch, rollout_stream=rollout_stream)
             self._runtime_by_game[game] = runtime
         return jax, jnp, runtime
+
+    def rollout_game_stream(
+        self,
+        game: str,
+        step_count: int,
+        lane_count: int,
+        seed: int,
+        include_incomplete: bool = False,
+    ) -> list[EpisodeRecord]:
+        if step_count < 1:
+            raise ValueError("step_count must be positive")
+        if lane_count < 1:
+            raise ValueError("lane_count must be positive")
+        jax, _jnp, runtime = self._runtime_for_game(game)
+        key = jax.random.PRNGKey(seed)
+        stream = runtime.rollout_stream(key, step_count, lane_count, seed)
+        frames, actions, rewards, terminals, episode_ids, episode_seeds = jax.device_get(stream)
+        return _stream_records_from_arrays(
+            game=game,
+            frames=np.asarray(frames, dtype=np.float32),
+            actions=np.asarray(actions, dtype=np.int16),
+            rewards=np.asarray(rewards, dtype=np.float32),
+            terminals=np.asarray(terminals, dtype=bool),
+            episode_ids=np.asarray(episode_ids, dtype=np.int32),
+            episode_seeds=np.asarray(episode_seeds, dtype=np.int64),
+            include_incomplete=include_incomplete,
+        )
 
 
 def _trim_episode_arrays(
@@ -126,6 +155,49 @@ def _trim_episode_arrays(
         rewards = rewards[:frame_count]
         terminals = terminals[:frame_count]
     return frames, actions, rewards, terminals
+
+
+def _stream_records_from_arrays(
+    game: str,
+    frames: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    terminals: np.ndarray,
+    episode_ids: np.ndarray,
+    episode_seeds: np.ndarray,
+    include_incomplete: bool = False,
+) -> list[EpisodeRecord]:
+    if frames.ndim != 4:
+        raise ValueError(f"expected stream frames shape steps x lanes x height x width, got {frames.shape}")
+    step_count, lane_count = frames.shape[:2]
+    records: list[EpisodeRecord] = []
+    for lane in range(lane_count):
+        lane_episode_ids = episode_ids[:, lane]
+        start = 0
+        while start < step_count:
+            episode_id = lane_episode_ids[start]
+            end = start + 1
+            while end < step_count and lane_episode_ids[end] == episode_id:
+                end += 1
+            lane_terminals = terminals[start:end, lane]
+            terminal_indices = np.flatnonzero(lane_terminals)
+            is_complete = bool(terminal_indices.size)
+            if is_complete:
+                end = start + int(terminal_indices[0]) + 1
+            if is_complete or include_incomplete:
+                records.append(
+                    EpisodeRecord(
+                        game=game,
+                        episode=len(records),
+                        seed=int(episode_seeds[start, lane]),
+                        frames=frames[start:end, lane],
+                        actions=actions[start:end, lane],
+                        rewards=rewards[start:end, lane],
+                        terminals=terminals[start:end, lane],
+                    )
+                )
+            start = end
+    return records
 
 
 def _load_pgx_stack(jax_cache_dir: str | None = "artifacts/jax-cache"):
@@ -185,7 +257,7 @@ def _select_action(jnp, logits, legal_action_mask) -> int:
 
 def _select_action_array(jnp, logits, legal_action_mask):
     masked_logits = jnp.where(legal_action_mask, logits, -jnp.inf)
-    return jnp.argmax(masked_logits).astype(jnp.int32)
+    return jnp.argmax(masked_logits, axis=-1).astype(jnp.int32)
 
 
 def _project_to_grayscale_jax(jnp, observation):
@@ -239,3 +311,68 @@ def _build_rollout_episode_jax(jax, jnp, environment, model, max_steps: int):
 
 def _rollout_episode_jax(jax, jnp, environment, model, key, max_steps: int):
     return _build_rollout_episode_jax(jax, jnp, environment, model, max_steps)(key)
+
+
+def _build_stream_rollout_jax(jax, jnp, environment, model):
+    @functools.partial(jax.jit, static_argnums=(1, 2))
+    def rollout(base_key, step_count: int, lane_count: int, seed: int):
+        del base_key
+        episode_ids = jnp.zeros(lane_count, dtype=jnp.int32)
+        episode_seeds = seed + jnp.arange(lane_count, dtype=jnp.int32)
+        episode_keys = jax.vmap(jax.random.PRNGKey)(episode_seeds)
+        episode_key_splits = jax.vmap(lambda key: jax.random.split(key, 2))(episode_keys)
+        state = jax.vmap(environment.init)(episode_key_splits[:, 0])
+        lane_keys = episode_key_splits[:, 1]
+        next_episode_seed = seed + lane_count
+
+        def scan_step(carry, _):
+            state, keys, episode_ids, episode_seeds, next_episode_seed = carry
+            frame = jax.vmap(lambda observation: _project_to_grayscale_jax(jnp, observation))(state.observation)
+            logits, _value = model(state.observation)
+            actions = _select_action_array(jnp, logits, state.legal_action_mask)
+            split_keys = jax.vmap(lambda key: jax.random.split(key, 3))(keys)
+            step_keys = split_keys[:, 0]
+            next_keys = split_keys[:, 2]
+            stepped = jax.vmap(environment.step)(state, actions, step_keys)
+            terminals = stepped.terminated | stepped.truncated
+            terminal_int = terminals.astype(jnp.int32)
+            reset_offsets = jnp.cumsum(terminal_int) - 1
+            replacement_seeds = next_episode_seed + reset_offsets
+            replacement_keys = jax.vmap(jax.random.PRNGKey)(replacement_seeds)
+            replacement_key_splits = jax.vmap(lambda key: jax.random.split(key, 2))(replacement_keys)
+            reset_state = jax.vmap(environment.init)(replacement_key_splits[:, 0])
+            next_state = jax.tree_util.tree_map(
+                lambda active_leaf, reset_leaf: _where_lane_terminal(jnp, terminals, reset_leaf, active_leaf),
+                stepped,
+                reset_state,
+            )
+            next_episode_ids = episode_ids + terminal_int
+            next_episode_seeds = jnp.where(terminals, replacement_seeds, episode_seeds)
+            next_keys = jnp.where(terminals[:, None], replacement_key_splits[:, 1], next_keys)
+            next_episode_seed = next_episode_seed + terminal_int.sum()
+            outputs = (
+                frame,
+                actions.astype(jnp.int32),
+                stepped.rewards[:, 0].astype(jnp.float32),
+                terminals,
+                episode_ids,
+                episode_seeds,
+            )
+            return (next_state, next_keys, next_episode_ids, next_episode_seeds, next_episode_seed), outputs
+
+        _carry, outputs = jax.lax.scan(
+            scan_step,
+            (state, lane_keys, episode_ids, episode_seeds, next_episode_seed),
+            xs=None,
+            length=step_count,
+        )
+        return outputs
+
+    return rollout
+
+
+def _where_lane_terminal(jnp, terminals, reset_leaf, active_leaf):
+    mask = terminals
+    while mask.ndim < active_leaf.ndim:
+        mask = mask[..., None]
+    return jnp.where(mask, reset_leaf, active_leaf)

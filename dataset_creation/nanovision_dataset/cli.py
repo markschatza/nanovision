@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 from nanovision_dataset.inspect import audit_run, export_contact_sheet, export_html_viewer, export_snippet
-from nanovision_dataset.minatar_source import DEFAULT_GAMES, MinAtarSource
+from nanovision_dataset.minatar_source import DEFAULT_GAMES, MinAtarSource, normalize_games
 from nanovision_dataset.pgx_source import PgxBaselineSource
 from nanovision_dataset.writer import artifact_to_dict, write_run
 
@@ -35,6 +35,17 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--batch-size", type=int, default=16)
     generate.add_argument("--out", type=Path, required=True)
     generate.set_defaults(func=_generate)
+
+    stream = subparsers.add_parser("generate-stream", help="Generate Pgx rollouts with reset-on-terminal lanes.")
+    stream.add_argument("--games", nargs="+", default=list(DEFAULT_GAMES))
+    stream.add_argument("--steps", type=int, default=100_000)
+    stream.add_argument("--lanes", type=int, default=16)
+    stream.add_argument("--seed", type=int, default=0)
+    stream.add_argument("--baseline-dir", type=str, default="artifacts/pgx-baselines")
+    stream.add_argument("--jax-cache-dir", type=str, default="artifacts/jax-cache")
+    stream.add_argument("--include-incomplete", action="store_true")
+    stream.add_argument("--out", type=Path, required=True)
+    stream.set_defaults(func=_generate_stream)
 
     audit = subparsers.add_parser("audit", help="Audit a saved dataset run.")
     audit.add_argument("run_dir", type=Path)
@@ -88,6 +99,45 @@ def _generate(args: argparse.Namespace) -> dict[str, object]:
             "policy": args.policy,
             "seed": args.seed,
             "max_steps": args.max_steps,
+        },
+    )
+    return {"artifact": artifact_to_dict(artifact)}
+
+
+def _generate_stream(args: argparse.Namespace) -> dict[str, object]:
+    source = PgxBaselineSource(
+        max_steps=args.steps,
+        baseline_dir=args.baseline_dir,
+        jax_cache_dir=args.jax_cache_dir,
+        batch_size=args.lanes,
+    )
+    records = []
+    seed_stride = args.steps * args.lanes + args.lanes
+    for game_index, game in enumerate(normalize_games(args.games)):
+        records.extend(
+            source.rollout_game_stream(
+                game=game,
+                step_count=args.steps,
+                lane_count=args.lanes,
+                seed=args.seed + game_index * seed_stride,
+                include_incomplete=args.include_incomplete,
+            )
+        )
+    artifact = write_run(
+        args.out,
+        records,
+        policy_source="pgx-baseline-stream",
+        settings={
+            "action_space": "pgx-minatar",
+            "baseline_dir": args.baseline_dir,
+            "games": args.games,
+            "include_incomplete": args.include_incomplete,
+            "jax_cache_dir": args.jax_cache_dir,
+            "lanes": args.lanes,
+            "policy": "pgx-baseline-stream",
+            "seed": args.seed,
+            "seed_stride": seed_stride,
+            "steps": args.steps,
         },
     )
     return {"artifact": artifact_to_dict(artifact)}

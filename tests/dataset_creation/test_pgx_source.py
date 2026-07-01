@@ -8,6 +8,7 @@ from nanovision_dataset.pgx_source import (
     _project_to_grayscale_jax,
     _select_action,
     _select_action_array,
+    _stream_records_from_arrays,
     _trim_episode_arrays,
     _update_jax_config_if_available,
 )
@@ -146,12 +147,90 @@ def test_runtime_is_cached_per_game(monkeypatch) -> None:
         "nanovision_dataset.pgx_source._build_rollout_episode_jax",
         lambda jax, jnp, environment, model, max_steps: object(),
     )
+    monkeypatch.setattr("nanovision_dataset.pgx_source._build_stream_rollout_jax", lambda jax, jnp, environment, model: object())
 
     first = source._runtime_for_game("breakout")[2]
     second = source._runtime_for_game("breakout")[2]
 
     assert first is second
     assert created == ["minatar-breakout", "minatar-breakout_v0"]
+
+
+def test_stream_records_from_arrays_groups_complete_episodes() -> None:
+    frames = np.zeros((5, 2, 10, 10), dtype=np.float32)
+    actions = np.zeros((5, 2), dtype=np.int16)
+    rewards = np.zeros((5, 2), dtype=np.float32)
+    terminals = np.asarray(
+        [
+            [False, False],
+            [True, False],
+            [False, True],
+            [False, False],
+            [True, False],
+        ],
+        dtype=bool,
+    )
+    episode_ids = np.asarray(
+        [
+            [0, 0],
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [1, 1],
+        ],
+        dtype=np.int32,
+    )
+    episode_seeds = np.asarray(
+        [
+            [10, 11],
+            [10, 11],
+            [12, 11],
+            [12, 13],
+            [12, 13],
+        ],
+        dtype=np.int64,
+    )
+
+    records = _stream_records_from_arrays(
+        game="breakout",
+        frames=frames,
+        actions=actions,
+        rewards=rewards,
+        terminals=terminals,
+        episode_ids=episode_ids,
+        episode_seeds=episode_seeds,
+    )
+
+    assert [(record.seed, len(record.frames), bool(record.terminals[-1])) for record in records] == [
+        (10, 2, True),
+        (12, 3, True),
+        (11, 3, True),
+    ]
+    assert [record.episode for record in records] == [0, 1, 2]
+
+
+def test_stream_records_from_arrays_can_keep_incomplete_tail() -> None:
+    frames = np.zeros((3, 1, 10, 10), dtype=np.float32)
+    actions = np.zeros((3, 1), dtype=np.int16)
+    rewards = np.zeros((3, 1), dtype=np.float32)
+    terminals = np.zeros((3, 1), dtype=bool)
+    episode_ids = np.zeros((3, 1), dtype=np.int32)
+    episode_seeds = np.full((3, 1), 4, dtype=np.int64)
+
+    records = _stream_records_from_arrays(
+        game="breakout",
+        frames=frames,
+        actions=actions,
+        rewards=rewards,
+        terminals=terminals,
+        episode_ids=episode_ids,
+        episode_seeds=episode_seeds,
+        include_incomplete=True,
+    )
+
+    assert len(records) == 1
+    assert len(records[0].frames) == 3
+    assert not records[0].terminals[-1]
 
 
 def test_batched_select_action_masks_each_row() -> None:
