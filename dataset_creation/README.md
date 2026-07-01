@@ -15,13 +15,14 @@ uv run nanovision-dataset generate --games breakout --episodes 1 --seed 0 --out 
 Use Pgx pretrained baselines for non-random trajectories:
 
 ```powershell
-uv run nanovision-dataset generate --games breakout --episodes 1 --seed 0 --policy pgx-baseline --out artifacts/datasets/pgx-smoke
+uv run nanovision-dataset generate --games breakout --episodes 16 --seed 0 --policy pgx-baseline --batch-size 16 --out artifacts/datasets/pgx-smoke
 ```
 
 Pgx baseline checkpoints download into `artifacts/pgx-baselines` by default.
 JAX/XLA compilations are cached in `artifacts/jax-cache` by default.
 Override it with `--jax-cache-dir` when running repeated remote generations from another working directory.
-Pgx baseline rollouts run as a JIT-compiled `jax.lax.scan`, then copy completed episode arrays back once for writing.
+Pgx baseline rollouts run as a JIT-compiled `jax.lax.scan` and batch episodes per game with `jax.vmap`, then copy completed episode arrays back once per batch for writing.
+The default Pgx batch size is `16`; tune `--batch-size` per game if memory or throughput says otherwise.
 Pgx runs use Pgx's MinAtar action indexing; do not mix action labels with native MinAtar random-policy runs without checking the manifest `action_space`.
 That directory is rebuildable and ignored by version control.
 

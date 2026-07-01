@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--policy", choices=["random", "pgx-baseline"], default="random")
     generate.add_argument("--baseline-dir", type=str, default="artifacts/pgx-baselines")
     generate.add_argument("--jax-cache-dir", type=str, default="artifacts/jax-cache")
+    generate.add_argument("--batch-size", type=int, default=16)
     generate.add_argument("--out", type=Path, required=True)
     generate.set_defaults(func=_generate)
 
@@ -68,6 +69,7 @@ def _generate(args: argparse.Namespace) -> dict[str, object]:
             max_steps=args.max_steps,
             baseline_dir=args.baseline_dir,
             jax_cache_dir=args.jax_cache_dir,
+            batch_size=args.batch_size,
         )
     else:
         source = MinAtarSource(max_steps=args.max_steps, policy_source="random")
@@ -79,6 +81,7 @@ def _generate(args: argparse.Namespace) -> dict[str, object]:
         settings={
             "action_space": "pgx-minatar" if args.policy == "pgx-baseline" else "minatar-native",
             "baseline_dir": args.baseline_dir if args.policy == "pgx-baseline" else None,
+            "batch_size": args.batch_size if args.policy == "pgx-baseline" else None,
             "games": args.games,
             "episodes": args.episodes,
             "jax_cache_dir": args.jax_cache_dir if args.policy == "pgx-baseline" else None,

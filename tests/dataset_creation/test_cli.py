@@ -60,10 +60,17 @@ def test_generate_command_records_pgx_policy_metadata(tmp_path, capsys, monkeypa
     class StubPgxSource:
         policy_source = "pgx-baseline"
 
-        def __init__(self, max_steps: int, baseline_dir: str, jax_cache_dir: str | None) -> None:
+        def __init__(
+            self,
+            max_steps: int,
+            baseline_dir: str,
+            jax_cache_dir: str | None,
+            batch_size: int,
+        ) -> None:
             self.max_steps = max_steps
             self.baseline_dir = baseline_dir
             self.jax_cache_dir = jax_cache_dir
+            self.batch_size = batch_size
 
         def rollout_games(self, games, episodes: int, seed: int):
             return [
@@ -92,6 +99,8 @@ def test_generate_command_records_pgx_policy_metadata(tmp_path, capsys, monkeypa
             "artifacts/custom-baselines",
             "--jax-cache-dir",
             "artifacts/custom-jax-cache",
+            "--batch-size",
+            "8",
             "--out",
             str(output_dir),
         ]
@@ -102,6 +111,7 @@ def test_generate_command_records_pgx_policy_metadata(tmp_path, capsys, monkeypa
     assert manifest["policy_source"] == "pgx-baseline"
     assert manifest["settings"]["action_space"] == "pgx-minatar"
     assert manifest["settings"]["baseline_dir"] == "artifacts/custom-baselines"
+    assert manifest["settings"]["batch_size"] == 8
     assert manifest["settings"]["jax_cache_dir"] == "artifacts/custom-jax-cache"
 
 

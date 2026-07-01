@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import functools
 import os
+from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
 
 from nanovision_dataset.minatar_source import EpisodeRecord, normalize_games
+
+
+@dataclass(frozen=True)
+class PgxRuntime:
+    rollout_batch: object
 
 
 class PgxBaselineSource:
@@ -15,13 +21,18 @@ class PgxBaselineSource:
         max_steps: int = 1000,
         baseline_dir: str = "artifacts/pgx-baselines",
         jax_cache_dir: str | None = "artifacts/jax-cache",
+        batch_size: int = 16,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
         self.max_steps = max_steps
         self.baseline_dir = baseline_dir
         self.jax_cache_dir = jax_cache_dir
+        self.batch_size = batch_size
         self.policy_source = "pgx-baseline"
+        self._runtime_by_game: dict[str, PgxRuntime] = {}
 
     def rollout_games(
         self,
@@ -33,56 +44,109 @@ class PgxBaselineSource:
             raise ValueError("episodes must be positive")
         records: list[EpisodeRecord] = []
         for game_index, game in enumerate(normalize_games(games)):
-            for episode in range(episodes):
-                episode_seed = seed + game_index * episodes + episode
-                records.append(self.rollout_episode(game, episode=episode, seed=episode_seed))
+            game_seed = seed + game_index * episodes
+            records.extend(self.rollout_game(game, episodes=episodes, first_episode=0, seed=game_seed))
+        return records
+
+    def rollout_game(self, game: str, episodes: int, first_episode: int, seed: int) -> list[EpisodeRecord]:
+        if episodes < 1:
+            raise ValueError("episodes must be positive")
+        records: list[EpisodeRecord] = []
+        for batch_start in range(0, episodes, self.batch_size):
+            current_batch_size = min(self.batch_size, episodes - batch_start)
+            seeds = np.arange(seed + batch_start, seed + batch_start + current_batch_size, dtype=np.int64)
+            records.extend(
+                self._rollout_episode_batch(
+                    game=game,
+                    first_episode=first_episode + batch_start,
+                    seeds=seeds,
+                )
+            )
         return records
 
     def rollout_episode(self, game: str, episode: int, seed: int) -> EpisodeRecord:
-        pgx, jax, jnp = _load_pgx_stack(self.jax_cache_dir)
-        environment = pgx.make(f"minatar-{game}")
-        model = pgx.make_baseline_model(f"minatar-{game}_v0", download_dir=self.baseline_dir)
+        return self._rollout_episode_batch(game=game, first_episode=episode, seeds=np.asarray([seed], dtype=np.int64))[0]
 
-        key = jax.random.PRNGKey(seed)
-        frames, actions, rewards, terminals = _rollout_episode_jax(
-            jax,
-            jnp,
-            environment,
-            model,
-            key,
-            self.max_steps,
-        )
-        frames = np.asarray(jax.device_get(frames), dtype=np.float32)
-        actions = np.asarray(jax.device_get(actions), dtype=np.int16)
-        rewards = np.asarray(jax.device_get(rewards), dtype=np.float32)
-        terminals = np.asarray(jax.device_get(terminals), dtype=bool)
+    def _rollout_episode_batch(self, game: str, first_episode: int, seeds: np.ndarray) -> list[EpisodeRecord]:
+        jax, jnp, runtime = self._runtime_for_game(game)
+        seed_array = jnp.asarray(seeds, dtype=jnp.uint32)
+        keys = jax.vmap(jax.random.PRNGKey)(seed_array)
+        batch_frames, batch_actions, batch_rewards, batch_terminals = runtime.rollout_batch(keys)
+        batch_frames = np.asarray(jax.device_get(batch_frames), dtype=np.float32)
+        batch_actions = np.asarray(jax.device_get(batch_actions), dtype=np.int16)
+        batch_rewards = np.asarray(jax.device_get(batch_rewards), dtype=np.float32)
+        batch_terminals = np.asarray(jax.device_get(batch_terminals), dtype=bool)
 
-        terminal_indices = np.flatnonzero(terminals)
-        if terminal_indices.size:
-            frame_count = int(terminal_indices[0]) + 1
-            frames = frames[:frame_count]
-            actions = actions[:frame_count]
-            rewards = rewards[:frame_count]
-            terminals = terminals[:frame_count]
+        records: list[EpisodeRecord] = []
+        for batch_index, seed in enumerate(seeds):
+            frames, actions, rewards, terminals = _trim_episode_arrays(
+                batch_frames[batch_index],
+                batch_actions[batch_index],
+                batch_rewards[batch_index],
+                batch_terminals[batch_index],
+            )
+            records.append(
+                EpisodeRecord(
+                    game=game,
+                    episode=first_episode + batch_index,
+                    seed=int(seed),
+                    frames=frames,
+                    actions=actions,
+                    rewards=rewards,
+                    terminals=terminals,
+                )
+            )
+        return records
 
-        return EpisodeRecord(
-            game=game,
-            episode=episode,
-            seed=seed,
-            frames=frames,
-            actions=actions,
-            rewards=rewards,
-            terminals=terminals,
-        )
+    def _runtime_for_game(self, game: str):
+        runtime = self._runtime_by_game.get(game)
+        jax, jnp = _load_jax_stack(self.jax_cache_dir)
+        if runtime is None:
+            pgx = _load_pgx()
+            environment = pgx.make(f"minatar-{game}")
+            model = pgx.make_baseline_model(f"minatar-{game}_v0", download_dir=self.baseline_dir)
+            rollout_episode = _build_rollout_episode_jax(jax, jnp, environment, model, self.max_steps)
+            rollout_batch = jax.jit(jax.vmap(rollout_episode))
+            runtime = PgxRuntime(rollout_batch=rollout_batch)
+            self._runtime_by_game[game] = runtime
+        return jax, jnp, runtime
+
+
+def _trim_episode_arrays(
+    frames: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    terminals: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    terminal_indices = np.flatnonzero(terminals)
+    if terminal_indices.size:
+        frame_count = int(terminal_indices[0]) + 1
+        frames = frames[:frame_count]
+        actions = actions[:frame_count]
+        rewards = rewards[:frame_count]
+        terminals = terminals[:frame_count]
+    return frames, actions, rewards, terminals
 
 
 def _load_pgx_stack(jax_cache_dir: str | None = "artifacts/jax-cache"):
+    jax, jnp = _load_jax_stack(jax_cache_dir)
+    return _load_pgx(), jax, jnp
+
+
+def _load_pgx():
+    try:
+        import pgx
+    except ImportError as exc:
+        raise RuntimeError("Pgx baseline policy requires `pgx`, `jax`, and `dm-haiku` dependencies") from exc
+    return pgx
+
+
+def _load_jax_stack(jax_cache_dir: str | None = "artifacts/jax-cache"):
     if jax_cache_dir:
         os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", jax_cache_dir)
     try:
         import jax
         import jax.numpy as jnp
-        import pgx
     except ImportError as exc:
         raise RuntimeError("Pgx baseline policy requires `pgx`, `jax`, and `dm-haiku` dependencies") from exc
     if jax_cache_dir:
@@ -94,7 +158,17 @@ def _load_pgx_stack(jax_cache_dir: str | None = "artifacts/jax-cache"):
             "jax_persistent_cache_enable_xla_caches",
             "xla_gpu_per_fusion_autotune_cache_dir",
         )
-    return pgx, jax, jnp
+    return jax, jnp
+
+
+def _episode_seed_ranges(games: Iterable[str] | None, episodes: int, seed: int) -> dict[str, np.ndarray]:
+    if episodes < 1:
+        raise ValueError("episodes must be positive")
+    ranges: dict[str, np.ndarray] = {}
+    for game_index, game in enumerate(normalize_games(games)):
+        start = seed + game_index * episodes
+        ranges[game] = np.arange(start, start + episodes, dtype=np.int64)
+    return ranges
 
 
 def _update_jax_config_if_available(jax, name: str, value: object) -> None:
@@ -125,7 +199,7 @@ def _project_to_grayscale_jax(jnp, observation):
     return weighted.max(axis=-1).astype(jnp.float32)
 
 
-def _rollout_episode_jax(jax, jnp, environment, model, key, max_steps: int):
+def _build_rollout_episode_jax(jax, jnp, environment, model, max_steps: int):
     @functools.partial(jax.jit, static_argnums=1)
     def rollout(start_key, step_count: int):
         start_key, init_key = jax.random.split(start_key)
@@ -160,4 +234,8 @@ def _rollout_episode_jax(jax, jnp, environment, model, key, max_steps: int):
         )
         return outputs
 
-    return rollout(key, max_steps)
+    return functools.partial(rollout, step_count=max_steps)
+
+
+def _rollout_episode_jax(jax, jnp, environment, model, key, max_steps: int):
+    return _build_rollout_episode_jax(jax, jnp, environment, model, max_steps)(key)
